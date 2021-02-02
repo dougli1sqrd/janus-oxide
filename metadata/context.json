@@ -1,0 +1,12 @@
+{
+    "@context": {
+        "Graph": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Graph",
+        "Ontology": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Ontology",
+        "Closure": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Closure",
+        "Model": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Model",
+        "Inferred": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Inferred",
+        "inferredFrom": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/inferredFrom",
+        "hasInferencesAt": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/hasInferencesAt",
+        "graphs": "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/graphs"
+    }
+}

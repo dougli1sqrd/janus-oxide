@@ -1,0 +1,28 @@
+@base <http://www.purl.org/dougli1sqrd/models/janus-oxide/meta> .
+
+@prefix :       <http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/> .
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+
+:Graph a rdfs:Class .
+
+:Ontology a rdfs:Class ;
+    rdfs:subClassOf :Graph .
+
+:Closure a rdfs:Class ;
+    rdfs:subClassOf :Graph .
+
+:Model a rdfs:Class ;
+    rdfs:subClassOf :Graph .
+
+:Inferred a rdfs:Class ;
+    rdfs:subClassOf :Graph .
+
+:inferredFrom a rdf:Property .
+
+:hasInferencesAt a rdf:Property .
+
+:graphs a rdf:Property .
+
+
+

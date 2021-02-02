@@ -1,0 +1,4 @@
+@base <http://www.example.org/model/A> .
+@prefix : <http://www.example.org/model/A/> .
+
+:A :rel :B .
