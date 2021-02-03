@@ -8,29 +8,34 @@ use rocket_contrib::json;
 use rocket::http::RawStr;
 use rocket::request::FromFormValue;
 
-use oxigraph;
 use oxigraph::SledStore as Store;
 use oxigraph::store::sled::{SledTransaction, SledConflictableTransactionError, SledQuadIter};
 use oxigraph::io::GraphFormat;
-use oxigraph::model::{GraphName, NamedNodeRef, GraphNameRef, NamedOrBlankNode, NamedOrBlankNodeRef, TermRef, Quad, NamedNode, Term};
+use oxigraph::model::{NamedNodeRef, GraphNameRef, NamedOrBlankNode, Quad, NamedNode, Term};
 
-use sophia_api::ns::Namespace;
+use sophia_api::term::SimpleIri;
+use sophia_api::term::TTerm;
+use sophia_api::term::TryCopyTerm;
 
 use itertools::Itertools;
 
 use unicase::UniCase;
 
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+use strum_macros::AsRefStr;
+
 use std::path;
 use std::fs::File;
 use std::io::BufReader;
-use std::convert::{Infallible, TryFrom};
+use std::convert::{Infallible, TryFrom, AsRef};
 use std::collections::HashMap;
 use std::str;
 
 #[macro_use]
 use serde::Serialize;
 
-#[derive(Serialize, Clone, Copy, Debug)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, EnumIter, AsRefStr)]
 enum GraphType {
     Ontology,
     Closure,
@@ -39,22 +44,43 @@ enum GraphType {
     Unknown
 }
 
+///
+/// For readability and writeability, we will use the `meta` module as the rust
+/// namespace of controlled vocabulary defined in `metadata/meta_ont.ttl`. This uses
+/// the sophia_api crate.
+/// 
+/// When reading URIs from the graph, these will come in from the Oxigraph models.
+/// So to get to a GraphType variant, we will first convert an Oxigraph `NamedNode`
+/// to a `SimpleIri` from sophia. Then we can convert from a sohpia SimpleIri into
+/// a GraphType.
+/// 
+/// NamedNode -> SimpleIri -> GraphType
+/// 
+/// GraphType -> SimpleIri
+/// 
+impl GraphType {
+    fn uri(&self) -> SimpleIri {
+        match self {
+            GraphType::Ontology => meta::Ontology,
+            GraphType::Closure => meta::Closure,
+            GraphType::Model => meta::Model,
+            GraphType::Inferred => meta::Inferred,
+            GraphType::Unknown => meta::Unknown
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a str> for GraphType {
     type Error = &'a str;
 
     fn try_from(val: &'a str) -> Result<GraphType, Self::Error> {
-        let ont = UniCase::new("ontology");
-        let close = UniCase::new("closure");
-        let model = UniCase::new("model");
-        let inferred = UniCase::new("inferred");
-
-        match UniCase::new(val) {
-            ont => Ok(GraphType::Ontology),
-            close => Ok(GraphType::Closure),
-            model => Ok(GraphType::Model),
-            inferred => Ok(GraphType::Inferred),
-            _ => Err(val)
+        // Use Unicase to test fuzzy equality case insensitively
+        let c = UniCase::new(val);
+        match GraphType::iter().find(|g| UniCase::new(g.as_ref()) == c ) {
+            Some(g) => Ok(g),
+            None => Err(val)
         }
+
     }
 }
 
@@ -69,6 +95,57 @@ impl<'v> FromFormValue<'v> for GraphType {
                 Err(_) => Err(form_value)
             },
             Err(_) => Err(form_value)
+        }
+    }
+}
+
+// ///
+// /// Thin wrapper around NamedNode to allow us to make trait impls on NamedNode
+// struct OxiUri(NamedNode);
+
+// /// As written this takes `SimpleIri` and brings them to `NamedNode` in a local wrapper.
+// /// This means SimpleIri can be into() -> OxiUri
+// impl<'s> From<SimpleIri<'_>> for OxiUri {
+//     fn from(iri: SimpleIri) -> OxiUri {
+//         let inner = iri.to_string();
+//         // It's okay to unwrap here since it was already known to be correctly parsed in SimpleIri
+//         OxiUri(NamedNode::new(inner).unwrap())
+//     }
+// }
+
+
+/// This converts an OxiGraph `NamedNode` into a GraphType. This employs the sophia
+/// `TTerm` trait which allows equality tests between different types that implement
+/// the trait. We have the `sophia` feature turned on for the oxigraph crate dependency
+/// which provides those implementations of `TTerm` for oxigraph types.
+/// 
+/// This will iterate through all simple variants of GraphType, getting the associated
+/// `uri()` method to get the SimpleIri which is then compared. If the two are equal,
+/// we use that GraphType variant.
+/// 
+/// It's not ideal to need to iterate through the variants. It's possible there's a `lazy_static!`
+/// way to associate these two values together so iteration isn't needed. Luckily the set is small
+/// so the actual overhead should be small.
+impl<'n> From<NamedNodeRef<'n>> for GraphType {
+    fn from(uri: NamedNodeRef) -> GraphType {
+        match GraphType::iter().find(|g| g.uri() == uri) {
+            Some(g) => g,
+            None => GraphType::Unknown
+        }
+    }
+}
+
+enum KnownGraphType<G> {
+    Known(G),
+    Unknown
+}
+
+impl KnownGraphType<GraphType> {
+    fn new(graph_type: GraphType) -> KnownGraphType<GraphType> {
+        if graph_type == GraphType::Unknown {
+            KnownGraphType::Unknown
+        } else {
+            KnownGraphType::Known(graph_type)
         }
     }
 }
@@ -93,38 +170,39 @@ fn index() -> &'static str {
 #[get("/graph?<graph_type>")]
 fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<GraphList> {
     println!("got type {:?}", graph_type);
-    
-    json::Json(accounted_graph_list(&store))
+
+    let graphs = accounted_graph_list(&store);
+    if let Some(KnownGraphType::Known(g)) = graph_type.map(KnownGraphType::new) {
+        let filtered_graphs: Vec<GraphData> = graphs.graphs
+            .into_iter()
+            .filter(|data| data.graph_type == g)
+            .collect();
+        json::Json(GraphList {
+            context: graphs.context,
+            graphs: filtered_graphs
+        })
+    } else {
+        json::Json(accounted_graph_list(&store))
+    }
 }
 
 fn accounted_graph_list(store: &Store) -> GraphList {
-    let iter = store.quads_for_pattern(None, None, None, Some(meta_ontology_uri()));
-    let mut subject_map = map_by_subject(iter);
+    let iter = store.quads_for_pattern(None, None, None, Some(meta_graph_uri()));
+    let subject_map = map_by_subject(iter);
     let mut graphs: Vec<GraphData> = vec![];
 
     for (graph_name, po_list) in subject_map.into_iter() {
-        let g_str =match po_list.iter().find(|(p, _)| {
+        
+        let g = match po_list.iter().find(|(p, _)| {
             p.as_ref() == oxigraph::model::vocab::rdf::TYPE
         }) {
-            Some((_, o)) => match o {
-                Term::NamedNode(n) => n.as_str(),
-                _ => "Unknown"
-            },
-            None => "Unknown"
-        };
-
-        // TODO This is gross, ew, apologies
-        let gt = match g_str {
-            "<http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Ontology>" => GraphType::Ontology,
-            "<http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Closure>" => GraphType::Closure,
-            "<http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Model>" => GraphType::Model,
-            "<http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/Inferred>" => GraphType::Inferred,
+            Some((_, Term::NamedNode(o))) => GraphType::from(o.as_ref()),
             _ => GraphType::Unknown
         };
 
         graphs.push(GraphData {
             id: graph_name.to_string(),
-            graph_type: gt
+            graph_type: g
         });
     }
 
@@ -134,10 +212,14 @@ fn accounted_graph_list(store: &Store) -> GraphList {
     }
 }
 
+///
+/// Takes an iterator of Quads and and groups them by shared Subject, to produce a map of entries
+/// of the subject node to a list of (predicate, object) tuples that all have the same subject.
+/// This map is returned
 fn map_by_subject(iter: SledQuadIter) -> HashMap<NamedOrBlankNode, Vec<(NamedNode, Term)>> {
     iter.fold(HashMap::new(), |mut current_map, quad_res| {
         let quad: Quad = quad_res.unwrap();
-        let i = current_map.entry(quad.subject).or_insert(vec![]);
+        let i = current_map.entry(quad.subject).or_insert_with(Vec::new);
         i.push((quad.predicate, quad.object));
         current_map
     })
@@ -148,6 +230,13 @@ fn meta_ontology_uri() -> GraphNameRef<'static> {
 }
 
 fn meta_graph_uri() -> GraphNameRef<'static> {
+    // This should somehow be using the `meta` module below.
+    // But in order to move between SimpleIRI (from sophia_api) we need to either define
+    // a convert (`From`) or `PartialEq`.
+    // But 1) We need to wrap either the oxigraph types or wrap `SimpleIRI` so we can impl
+    // traits on them
+    // And 2) What the hell which part of the oxigraph model do we target? Refs? The enums?
+    // The underlying structs inside each enum variant? Confusing.
     GraphNameRef::NamedNode(NamedNodeRef::new("http://www.purl.org/dougli1sqrd/models/janus-oxide/Meta").unwrap())
 }
 
@@ -163,6 +252,25 @@ fn prelaunch() -> Store {
     });
 
     store
+}
+
+
+pub mod meta {
+    use sophia_api::namespace;
+
+    namespace!(
+        "http://www.purl.org/dougli1sqrd/models/janus-oxide/Meta/",
+        // classes
+        Graph,
+        Ontology,
+        Closure,
+        Model,
+        Inferred,
+        Unknown,
+        // relations
+        inferredFrom,
+        hasInferencesAt
+    );
 }
 
 

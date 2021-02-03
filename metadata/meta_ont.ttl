@@ -1,6 +1,6 @@
-@base <http://www.purl.org/dougli1sqrd/models/janus-oxide/meta> .
+@base <http://www.purl.org/dougli1sqrd/models/janus-oxide/Meta> .
 
-@prefix :       <http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/> .
+@prefix :       <http://www.purl.org/dougli1sqrd/models/janus-oxide/Meta/> .
 @prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
 
@@ -18,11 +18,11 @@
 :Inferred a rdfs:Class ;
     rdfs:subClassOf :Graph .
 
+:Unknown a rdfs:Class .
+
 :inferredFrom a rdf:Property .
 
 :hasInferencesAt a rdf:Property .
-
-:graphs a rdf:Property .
 
 
 
