@@ -126,7 +126,7 @@ impl<'v> FromFormValue<'v> for GraphType {
 /// so the actual overhead should be small.
 impl<'n> From<NamedNodeRef<'n>> for GraphType {
     fn from(uri: NamedNodeRef) -> GraphType {
-        match GraphType::iter().find(|g| g.uri() == uri) {
+        match GraphType::iter().find(|g| NamedNode::from(g.uri()).as_ref() == uri) {
             Some(g) => g,
             None => GraphType::Unknown,
         }
@@ -148,7 +148,7 @@ impl KnownGraphType<GraphType> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct GraphData {
     id: String,
     graph_type: GraphType,
@@ -188,6 +188,9 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
 fn accounted_graph_list(store: &Store) -> GraphList {
     let iter = store.quads_for_pattern(None, None, None, Some(meta_graph_uri()));
     let subject_map = map_by_subject(iter);
+
+    println!("{:?}", subject_map);
+    
     let graphs = subject_map
         .into_iter()
         .map(|(graph_name, po_list)| {
@@ -244,6 +247,10 @@ fn meta_graph_uri() -> GraphNameRef<'static> {
     )
 }
 
+fn graph_metadata_entry(graph: NamedNode, graph_type: GraphType) -> Quad {
+    Quad::new(graph, oxigraph::model::vocab::rdf::TYPE, NamedNode::from(graph_type.uri()), meta_graph_uri())
+}
+
 fn prelaunch() -> Store {
     let store = Store::open("data").unwrap();
 
@@ -257,6 +264,21 @@ fn prelaunch() -> Store {
             meta_ontology_uri(),
             None,
         );
+
+        let example_graph = NamedNode::new("http://www.purl.org/dougli1sqrd/models/janus-oxide/hello").unwrap();
+        let example_triple = Quad::new(
+            NamedNode::from(SimpleIri::new(example_graph.as_str(), Some("world")).unwrap()),
+            oxigraph::model::vocab::rdf::TYPE,
+            NamedNode::from(SimpleIri::new(example_graph.as_str(), Some("greeting")).unwrap()),
+            example_graph.clone()
+        );
+        let example_metadata = graph_metadata_entry(example_graph, GraphType::Model);
+
+        println!("Inserting {}", example_triple);
+        println!("Inserting {}", example_metadata);
+        let _ = transaction.insert(example_triple.as_ref());
+        let _ = transaction.insert(example_metadata.as_ref());
+
         Ok(()) as Result<(), SledConflictableTransactionError<Infallible>>
     });
 
