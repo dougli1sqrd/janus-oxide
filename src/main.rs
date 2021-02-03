@@ -188,22 +188,23 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
 fn accounted_graph_list(store: &Store) -> GraphList {
     let iter = store.quads_for_pattern(None, None, None, Some(meta_graph_uri()));
     let subject_map = map_by_subject(iter);
-    let mut graphs: Vec<GraphData> = vec![];
+    let graphs = subject_map
+        .into_iter()
+        .map(|(graph_name, po_list)| {
+            let g = match po_list
+                .iter()
+                .find(|(p, _)| p.as_ref() == oxigraph::model::vocab::rdf::TYPE)
+            {
+                Some((_, Term::NamedNode(o))) => GraphType::from(o.as_ref()),
+                _ => GraphType::Unknown,
+            };
 
-    for (graph_name, po_list) in subject_map.into_iter() {
-        let g = match po_list
-            .iter()
-            .find(|(p, _)| p.as_ref() == oxigraph::model::vocab::rdf::TYPE)
-        {
-            Some((_, Term::NamedNode(o))) => GraphType::from(o.as_ref()),
-            _ => GraphType::Unknown,
-        };
-
-        graphs.push(GraphData {
-            id: graph_name.to_string(),
-            graph_type: g,
-        });
-    }
+            GraphData {
+                id: graph_name.to_string(),
+                graph_type: g,
+            }
+        })
+        .collect();
 
     GraphList {
         context: "http://www.purl.org/dougli1sqrd/models/janus-oxide/meta/context.json".into(),
