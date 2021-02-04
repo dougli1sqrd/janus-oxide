@@ -4,12 +4,14 @@
 extern crate rocket;
 
 use rocket::http::RawStr;
-use rocket::request::FromFormValue;
+use rocket::request::{FromFormValue, FromSegments};
+use rocket::response::status;
 use rocket::State;
 use rocket_contrib::json;
+use rocket::http::uri::Segments;
 
-use oxigraph::io::GraphFormat;
-use oxigraph::model::{GraphNameRef, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Term};
+use oxigraph::io::{GraphFormat, GraphSerializer};
+use oxigraph::model::{GraphNameRef, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Triple, Term};
 use oxigraph::store::sled::{SledConflictableTransactionError, SledQuadIter, SledTransaction};
 use oxigraph::SledStore as Store;
 
@@ -185,6 +187,57 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
     }
 }
 
+#[derive(Debug)]
+struct UriWrapper(NamedNode);
+
+impl<'u> FromSegments<'u> for UriWrapper {
+    type Error = String;
+
+    fn from_segments(param: Segments) -> Result<UriWrapper, Self::Error> {
+        println!("hello param {:?}", param);
+        let raw = RawStr::from_str(param.0);
+        let decoded = raw.percent_decode().unwrap();
+        let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
+        println!("Now what do we have? {:?}", unbracketed);
+        match NamedNode::new(unbracketed) {
+            Ok(named) => Ok(UriWrapper(named)),
+            Err(err) => Err(format!("{}", err))
+        }
+    }
+}
+
+#[get("/graph/<graph_uri..>")]
+fn get_graph(store: State<Store>, graph_uri: UriWrapper) -> Result<String, status::NotFound<String>> {
+    let all_graphs = accounted_graph_list(&store);
+    
+    // let decoded = Uri::percent_decode(graph_uri.as_str().as_bytes()).unwrap().to_owned();
+    println!("Decoded: {:?}", graph_uri);
+    match all_graphs.graphs
+        .into_iter()
+        .find(|g: &GraphData| g.id == graph_uri.0.to_string())
+        .map(|_| write_graph_as_ttl_string(&store, graph_uri.0.clone())) {
+        
+        Some(content) => Ok(content.unwrap()),
+        None => Err(status::NotFound(format!("Graph {} cannot be found!", graph_uri.0)))
+    }
+}
+
+fn write_graph_as_ttl_string(store: &Store, graph_uri: NamedNode) -> Result<String, String> {
+    let quads_iter = store.quads_for_pattern(None, None, None,
+        Some(GraphNameRef::NamedNode(graph_uri.as_ref())));
+
+    let mut buffer = Vec::new();
+    let mut writer = GraphSerializer::from_format(GraphFormat::Turtle).triple_writer(&mut buffer).unwrap();
+    quads_iter.map(|q| Triple::from(q.unwrap()))
+        .fold(&mut writer, |w, triple| {
+            let _ = w.write(triple.as_ref()); // Ignore error cause we're bad
+            w
+    });
+    let _ = writer.finish();
+
+    String::from_utf8(buffer).map_err(|e| e.to_string())
+}
+
 fn accounted_graph_list(store: &Store) -> GraphList {
     let iter = store.quads_for_pattern(None, None, None, Some(meta_graph_uri()));
     let subject_map = map_by_subject(iter);
@@ -310,6 +363,6 @@ fn main() {
 
     rocket::ignite()
         .manage(store)
-        .mount("/", routes![index, graphs])
+        .mount("/", routes![index, graphs, get_graph])
         .launch();
 }
