@@ -5,12 +5,13 @@ extern crate rocket;
 
 use rocket::http::RawStr;
 use rocket::request::{FromFormValue, FromSegments};
+use rocket::data::FromDataSimple;
 use rocket::response::status;
 use rocket::State;
 use rocket_contrib::json;
 use rocket::http::uri::Segments;
 
-use oxigraph::io::{GraphFormat, GraphSerializer};
+use oxigraph::io::{GraphFormat, GraphSerializer, GraphParser};
 use oxigraph::model::{GraphNameRef, NamedNode, NamedNodeRef, NamedOrBlankNode, Quad, Triple, Term};
 use oxigraph::store::sled::{SledConflictableTransactionError, SledQuadIter, SledTransaction};
 use oxigraph::SledStore as Store;
@@ -30,7 +31,7 @@ use strum_macros::EnumIter;
 use std::collections::HashMap;
 use std::convert::{AsRef, Infallible, TryFrom};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::path;
 use std::str;
 
@@ -162,6 +163,41 @@ struct GraphList {
     graphs: Vec<GraphData>,
 }
 
+#[derive(Debug)]
+struct UriWrapper(NamedNode);
+
+impl<'u> FromSegments<'u> for UriWrapper {
+    type Error = String;
+
+    fn from_segments(param: Segments) -> Result<UriWrapper, Self::Error> {
+        let raw = RawStr::from_str(param.0);
+        let decoded = raw.percent_decode().unwrap();
+
+        if decoded.starts_with('<') && decoded.ends_with('>') {
+            let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
+            match NamedNode::new(unbracketed) {
+                Ok(named) => Ok(UriWrapper(named)),
+                Err(err) => Err(format!("{}", err))
+            }
+        } else {
+            // This forwards routing attempts if we aren't surrounded by angle brackets
+            Err("URIs should be denoted by starting with `<` and ending with `>`".to_string())
+        }
+    }
+}
+
+impl<'u> FromFormValue<'u> for UriWrapper {
+    type Error = &'u RawStr;
+
+    fn from_form_value(form_value: &'u RawStr) -> Result<UriWrapper, Self::Error> {
+        match NamedNode::new(form_value.to_string()) {
+            Ok(node) => Ok(UriWrapper(node)),
+            Err(_) => Err(form_value)
+        }
+    }
+}
+
+
 #[get("/")]
 fn index() -> &'static str {
     "Hello, World!"
@@ -169,8 +205,6 @@ fn index() -> &'static str {
 
 #[get("/graph?<graph_type>")]
 fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<GraphList> {
-    println!("got type {:?}", graph_type);
-
     let graphs = accounted_graph_list(&store);
     if let Some(KnownGraphType::Known(g)) = graph_type.map(KnownGraphType::new) {
         let filtered_graphs: Vec<GraphData> = graphs
@@ -187,42 +221,60 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
     }
 }
 
-#[derive(Debug)]
-struct UriWrapper(NamedNode);
-
-impl<'u> FromSegments<'u> for UriWrapper {
-    type Error = String;
-
-    fn from_segments(param: Segments) -> Result<UriWrapper, Self::Error> {
-        println!("hello param {:?}", param);
-        let raw = RawStr::from_str(param.0);
-        let decoded = raw.percent_decode().unwrap();
-        let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
-        println!("Now what do we have? {:?}", unbracketed);
-        match NamedNode::new(unbracketed) {
-            Ok(named) => Ok(UriWrapper(named)),
-            Err(err) => Err(format!("{}", err))
-        }
-    }
+#[post("/graph?<graph_uri>&<graph_type>", data="<triples>")]
+fn add_new_graph_by_ttl(store: State<Store>, graph_uri: UriWrapper, graph_type: GraphType, triples: Vec<u8>) -> String {
+    println!("hello post");
+    let loaded = load_turtle_into_new_graph(&store, graph_uri.0, graph_type, triples);
+    format!("Loaded {} triples", loaded)
 }
 
 #[get("/graph/<graph_uri..>")]
 fn get_graph(store: State<Store>, graph_uri: UriWrapper) -> Result<String, status::NotFound<String>> {
+    
     let all_graphs = accounted_graph_list(&store);
     
-    // let decoded = Uri::percent_decode(graph_uri.as_str().as_bytes()).unwrap().to_owned();
-    println!("Decoded: {:?}", graph_uri);
     match all_graphs.graphs
         .into_iter()
         .find(|g: &GraphData| g.id == graph_uri.0.to_string())
-        .map(|_| write_graph_as_ttl_string(&store, graph_uri.0.clone())) {
+        .map(|_| read_graph_as_ttl_string(&store, graph_uri.0.clone())) {
         
         Some(content) => Ok(content.unwrap()),
         None => Err(status::NotFound(format!("Graph {} cannot be found!", graph_uri.0)))
     }
 }
 
-fn write_graph_as_ttl_string(store: &Store, graph_uri: NamedNode) -> Result<String, String> {
+fn load_turtle_into_new_graph(store: &Store, graph_uri: NamedNode, graph_type: GraphType, triples: Vec<u8>) -> usize {
+    let metadata_entry = graph_metadata_entry(graph_uri.clone(), graph_type);
+
+    let parser = GraphParser::from_format(GraphFormat::Turtle)
+        .with_base_iri(graph_uri.clone().to_string()).unwrap();
+    let r: Vec<_> = parser.read_triples(Cursor::new(triples)).unwrap()
+        .collect::<Result<Vec<_>,_>>().unwrap();
+    
+    let number_parsed = r.len();
+    println!("Parsed {} triples", number_parsed);
+
+    let _ = store.transaction(|transaction: SledTransaction| {
+        let _ = transaction.insert(metadata_entry.as_ref());
+        let results: Result<Vec<_>, _> = r.clone().into_iter().map(|triple| {
+            transaction.insert(triple.in_graph(graph_uri.as_ref()).as_ref())
+        }).collect();
+
+        let _ = match results {
+            Ok(_) => {},
+            Err(e) => {
+                println!("Broke when inserting! {}", e);
+            }
+        };
+
+        Ok(()) as Result<(), SledConflictableTransactionError<Infallible>>
+    });
+
+    number_parsed
+
+}
+
+fn read_graph_as_ttl_string(store: &Store, graph_uri: NamedNode) -> Result<String, String> {
     let quads_iter = store.quads_for_pattern(None, None, None,
         Some(GraphNameRef::NamedNode(graph_uri.as_ref())));
 
