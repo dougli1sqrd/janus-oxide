@@ -167,22 +167,11 @@ struct GraphList {
 struct UriWrapper(NamedNode);
 
 impl<'u> FromSegments<'u> for UriWrapper {
-    type Error = String;
+    type Error = &'u RawStr;
 
-    fn from_segments(param: Segments) -> Result<UriWrapper, Self::Error> {
-        let raw = RawStr::from_str(param.0);
-        let decoded = raw.percent_decode().unwrap();
-
-        if decoded.starts_with('<') && decoded.ends_with('>') {
-            let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
-            match NamedNode::new(unbracketed) {
-                Ok(named) => Ok(UriWrapper(named)),
-                Err(err) => Err(format!("{}", err))
-            }
-        } else {
-            // This forwards routing attempts if we aren't surrounded by angle brackets
-            Err("URIs should be denoted by starting with `<` and ending with `>`".to_string())
-        }
+    fn from_segments(param: Segments<'u>) -> Result<UriWrapper, Self::Error> {
+        let raw: &'u RawStr = RawStr::from_str(param.0);
+        decode_uri(raw)
     }
 }
 
@@ -190,10 +179,20 @@ impl<'u> FromFormValue<'u> for UriWrapper {
     type Error = &'u RawStr;
 
     fn from_form_value(form_value: &'u RawStr) -> Result<UriWrapper, Self::Error> {
-        match NamedNode::new(form_value.to_string()) {
-            Ok(node) => Ok(UriWrapper(node)),
-            Err(_) => Err(form_value)
+        decode_uri(form_value)
+    }
+}
+
+fn decode_uri(raw_uri: &RawStr) -> Result<UriWrapper, &RawStr> {
+    let decoded = raw_uri.percent_decode().unwrap();
+    if decoded.starts_with('<') && decoded.ends_with('>') {
+        let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
+        match NamedNode::new(unbracketed) {
+            Ok(named) => Ok(UriWrapper(named)),
+            Err(err) => Err(raw_uri)
         }
+    } else {
+        Err(raw_uri)
     }
 }
 
@@ -222,10 +221,10 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
 }
 
 #[post("/graph?<graph_uri>&<graph_type>", data="<triples>")]
-fn add_new_graph_by_ttl(store: State<Store>, graph_uri: UriWrapper, graph_type: GraphType, triples: Vec<u8>) -> String {
-    println!("hello post");
+fn add_new_graph_by_ttl(store: State<Store>, graph_uri: UriWrapper, graph_type: GraphType, triples: Vec<u8>) -> json::JsonValue {
+    println!("loading into {:?}", graph_uri);
     let loaded = load_turtle_into_new_graph(&store, graph_uri.0, graph_type, triples);
-    format!("Loaded {} triples", loaded)
+    rocket_contrib::json!({"loaded": loaded})
 }
 
 #[get("/graph/<graph_uri..>")]
@@ -246,8 +245,8 @@ fn get_graph(store: State<Store>, graph_uri: UriWrapper) -> Result<String, statu
 fn load_turtle_into_new_graph(store: &Store, graph_uri: NamedNode, graph_type: GraphType, triples: Vec<u8>) -> usize {
     let metadata_entry = graph_metadata_entry(graph_uri.clone(), graph_type);
 
-    let parser = GraphParser::from_format(GraphFormat::Turtle)
-        .with_base_iri(graph_uri.clone().to_string()).unwrap();
+    let parser = GraphParser::from_format(GraphFormat::Turtle);
+
     let r: Vec<_> = parser.read_triples(Cursor::new(triples)).unwrap()
         .collect::<Result<Vec<_>,_>>().unwrap();
     
@@ -415,6 +414,6 @@ fn main() {
 
     rocket::ignite()
         .manage(store)
-        .mount("/", routes![index, graphs, get_graph])
+        .mount("/", routes![index, graphs, get_graph, add_new_graph_by_ttl])
         .launch();
 }
