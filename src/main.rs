@@ -101,20 +101,6 @@ impl<'v> FromFormValue<'v> for GraphType {
     }
 }
 
-// ///
-// /// Thin wrapper around NamedNode to allow us to make trait impls on NamedNode
-// struct OxiUri(NamedNode);
-
-// /// As written this takes `SimpleIri` and brings them to `NamedNode` in a local wrapper.
-// /// This means SimpleIri can be into() -> OxiUri
-// impl<'s> From<SimpleIri<'_>> for OxiUri {
-//     fn from(iri: SimpleIri) -> OxiUri {
-//         let inner = iri.to_string();
-//         // It's okay to unwrap here since it was already known to be correctly parsed in SimpleIri
-//         OxiUri(NamedNode::new(inner).unwrap())
-//     }
-// }
-
 /// This converts an OxiGraph `NamedNode` into a GraphType. This employs the sophia
 /// `TTerm` trait which allows equality tests between different types that implement
 /// the trait. We have the `sophia` feature turned on for the oxigraph crate dependency
@@ -189,7 +175,7 @@ fn decode_uri(raw_uri: &RawStr) -> Result<UriWrapper, &RawStr> {
         let unbracketed = decoded.trim_start_matches('<').trim_end_matches('>');
         match NamedNode::new(unbracketed) {
             Ok(named) => Ok(UriWrapper(named)),
-            Err(err) => Err(raw_uri)
+            Err(_) => Err(raw_uri)
         }
     } else {
         Err(raw_uri)
@@ -220,11 +206,22 @@ fn graphs(store: State<Store>, graph_type: Option<GraphType>) -> json::Json<Grap
     }
 }
 
-#[post("/graph?<graph_uri>&<graph_type>", data="<triples>")]
-fn add_new_graph_by_ttl(store: State<Store>, graph_uri: UriWrapper, graph_type: GraphType, triples: Vec<u8>) -> json::JsonValue {
+#[post("/graph?<graph_uri>&<graph_type>", format="text/turtle", data="<triples>")]
+fn add_new_graph_by_ttl(store: State<Store>, graph_uri: UriWrapper, graph_type: GraphType, triples: Vec<u8>) -> Result<json::JsonValue, status::BadRequest<String>> {
     println!("loading into {:?}", graph_uri);
+
+    let existing_graphs = accounted_graph_list(&store);
+
+    if existing_graphs.graphs.into_iter().any(|g| g.id == graph_uri.0.to_string() ) {
+       return Err(status::BadRequest(Some(format!("Graph URI {} already exists!", graph_uri.0))))
+    } else if graph_uri.0.to_string() == meta_graph_uri().to_string() 
+            || graph_uri.0.to_string() == meta_ontology_uri().to_string() {
+        
+        return Err(status::BadRequest(Some("Untouchable graph".to_owned())));
+    }
+    
     let loaded = load_turtle_into_new_graph(&store, graph_uri.0, graph_type, triples);
-    rocket_contrib::json!({"loaded": loaded})
+    Ok(rocket_contrib::json!({"loaded": loaded}))
 }
 
 #[get("/graph/<graph_uri..>")]
