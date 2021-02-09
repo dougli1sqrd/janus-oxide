@@ -1,5 +1,5 @@
 mod graph;
-mod model;
+pub mod model;
 pub mod storage;
 
 pub use graph::GraphType;

@@ -15,11 +15,17 @@ use std::fs::File;
 use std::io::{BufReader};
 use std::path;
 
+use api::model;
+use api::model::Transact;
+use api::model::Transaction;
+use api::model::TransactStore;
+
 
 fn prelaunch() -> Store {
     let store = Store::open("data").unwrap();
+    let mystore: TransactStore<Store, Box<dyn Fn(SledTransaction) -> Result<(), SledConflictableTransactionError<Infallible>>>, SledTransaction<'_>, (), SledConflictableTransactionError<Infallible>, Infallible> = TransactStore::new(store.clone());
 
-    let _ = store.transaction(|transaction: SledTransaction| {
+    let _ = mystore.store.transaction(|transaction: SledTransaction| {
         let meta_ont_path = path::Path::new("metadata/meta_ont.ttl");
         let meta_ont = File::open(meta_ont_path).unwrap();
 
