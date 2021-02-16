@@ -1,6 +1,7 @@
 mod graph;
 pub mod model;
 pub mod storage;
+mod dataset;
 
 pub use graph::GraphType;
 pub use graph::KnownGraphType;
