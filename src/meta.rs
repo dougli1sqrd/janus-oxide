@@ -41,3 +41,18 @@ namespace!(
     inferredFrom,
     hasInferencesAt
 );
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_graph_metadat_entry() {
+        let graph = NamedNode::new_unchecked("http://example.com/G");
+        let quad = graph_metadata_entry(graph.clone(), GraphType::Model);
+        
+        let expected = Quad::new(graph, oxigraph::model::vocab::rdf::TYPE, NamedNode::from(GraphType::Model.uri()), meta_graph_uri());
+
+        assert_eq!(expected, quad);
+    }
+}

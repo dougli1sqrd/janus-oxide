@@ -85,6 +85,7 @@ impl<'n> From<NamedNodeRef<'n>> for GraphType {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub enum KnownGraphType<G> {
     Known(G),
     Unknown,
@@ -114,3 +115,46 @@ pub struct GraphList {
 
 #[derive(Debug)]
 pub struct UriWrapper(pub NamedNode);
+
+
+#[cfg(test)]
+mod testr {
+    use super::*;
+
+    #[test]
+    fn test_graphtype_uri() {
+        assert_eq!(GraphType::Model.uri(), meta::Model);
+        assert_eq!(GraphType::Closure.uri(), meta::Closure);
+        assert_eq!(GraphType::Inferred.uri(), meta::Inferred);
+        assert_eq!(GraphType::Ontology.uri(), meta::Ontology);
+        assert_eq!(GraphType::Unknown.uri(), meta::Unknown);
+    }
+
+    #[test]
+    fn test_any_case_graph_type_from_str() {
+        assert_eq!(GraphType::try_from("model"), Ok(GraphType::Model));
+        assert_eq!(GraphType::try_from("Model"), Ok(GraphType::Model));
+        assert_eq!(GraphType::try_from("MODEL"), Ok(GraphType::Model));
+        assert_eq!(GraphType::try_from("Closure"), Ok(GraphType::Closure));
+    }
+
+    #[test]
+    fn test_graph_type_try_from_error() {
+        assert_eq!(GraphType::try_from("Blah"), Err("Blah"));
+    }
+
+    #[test]
+    fn test_graph_type_from_uri() {
+        assert_eq!(GraphType::from(NamedNode::from(meta::Ontology).as_ref()), GraphType::Ontology);
+        assert_eq!(GraphType::from(NamedNode::from(meta::Unknown).as_ref()), GraphType::Unknown);
+        assert_eq!(GraphType::from(NamedNodeRef::new_unchecked("http::www.example.com/Blah")), GraphType::Unknown);
+    }
+
+    #[test]
+    fn test_known_graph_from_graphtype() {
+        assert_eq!(KnownGraphType::new(GraphType::Model), KnownGraphType::Known(GraphType::Model));
+        assert_eq!(KnownGraphType::new(GraphType::Unknown), KnownGraphType::Unknown);
+    }
+}
+
+
